@@ -18,7 +18,7 @@ frame_support::construct_runtime!(
         UncheckedExtrinsic = UncheckedExtrinsic,
     {
         System: frame_system::{Module, Call, Config, Storage, Event<T>},
-        TemplateModule: pallet_world::{Module, Call, Storage, Event<T>},
+        World: pallet_world::{Module, Call, Storage},
     }
 );
 
@@ -52,9 +52,7 @@ impl system::Config for Test {
     type SS58Prefix = SS58Prefix;
 }
 
-impl pallet_world::Config for Test {
-    type Event = Event;
-}
+impl pallet_world::Config for Test {}
 
 // Build genesis storage according to the mock runtime.
 pub fn new_test_ext() -> sp_io::TestExternalities {

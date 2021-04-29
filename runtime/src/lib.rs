@@ -265,9 +265,7 @@ impl pallet_sudo::Config for Runtime {
     type Call = Call;
 }
 
-impl pallet_world::Config for Runtime {
-    type Event = Event;
-}
+impl pallet_world::Config for Runtime {}
 
 // Create the runtime by composing the FRAME pallets that were previously configured.
 construct_runtime!(
@@ -285,7 +283,7 @@ construct_runtime!(
         TransactionPayment: pallet_transaction_payment::{Module, Storage},
         Sudo: pallet_sudo::{Module, Call, Config<T>, Storage, Event<T>},
         // Custom
-        World: pallet_world::{Module, Call, Storage, Event<T>},
+        World: pallet_world::{Module, Call, Storage},
     }
 );
 

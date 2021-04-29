@@ -14,6 +14,9 @@ mod tests;
 #[cfg(feature = "runtime-benchmarks")]
 mod benchmarking;
 
+const CHUNK_STORAGE_WIEGHT: u64 = 1_000_000;
+const EMPTY_CHUNK: [[[u16; 16]; 16]; 16] = [[[0u16; 16]; 16]; 16];
+
 #[frame_support::pallet]
 pub mod pallet {
     use frame_support::{dispatch::DispatchResultWithPostInfo, pallet_prelude::*};
@@ -21,10 +24,7 @@ pub mod pallet {
 
     /// Configure the pallet by specifying the parameters and types on which it depends.
     #[pallet::config]
-    pub trait Config: frame_system::Config {
-        /// Because this pallet emits events, it depends on the runtime's definition of an event.
-        type Event: From<Event<Self>> + IsType<<Self as frame_system::Config>::Event>;
-    }
+    pub trait Config: frame_system::Config {}
 
     #[pallet::pallet]
     #[pallet::generate_store(pub(super) trait Store)]
@@ -33,29 +33,28 @@ pub mod pallet {
     // The pallet's runtime storage items.
     // https://substrate.dev/docs/en/knowledgebase/runtime/storage
     #[pallet::storage]
-    #[pallet::getter(fn something)]
+    #[pallet::getter(fn chunk)]
     // Learn more about declaring storage items:
     // https://substrate.dev/docs/en/knowledgebase/runtime/storage#declaring-storage-items
-    pub type Something<T> = StorageValue<_, u32>;
-
-    // Pallets use events to inform users when important changes are made.
-    // https://substrate.dev/docs/en/knowledgebase/runtime/events
-    #[pallet::event]
-    #[pallet::metadata(T::AccountId = "AccountId")]
-    #[pallet::generate_deposit(pub(super) fn deposit_event)]
-    pub enum Event<T: Config> {
-        /// Event documentation should end with an array that provides descriptive names for event
-        /// parameters. [something, who]
-        SomethingStored(u32, T::AccountId),
-    }
+    pub type Chunks<T> = StorageMap<
+        _,
+        Blake2_128Concat,
+        [i32; 3],
+        (
+            <T as frame_system::Config>::AccountId,
+            [[[u16; 16]; 16]; 16],
+        ),
+    >;
 
     // Errors inform users that something went wrong.
     #[pallet::error]
     pub enum Error<T> {
-        /// Error names should be descriptive.
-        NoneValue,
-        /// Errors should have helpful documentation associated with them.
-        StorageOverflow,
+        /// That chunk has not yet been claimed.
+        ChunkDoesNotExist,
+        /// That chunk does not belong to you.
+        NotYours,
+        /// You can't claim that chunk because it is already owned by someone.
+        AlreadyOwned,
     }
 
     #[pallet::hooks]
@@ -66,41 +65,73 @@ pub mod pallet {
     // Dispatchable functions must be annotated with a weight and must return a DispatchResult.
     #[pallet::call]
     impl<T: Config> Pallet<T> {
-        /// An example dispatchable that takes a singles value as a parameter, writes the value to
-        /// storage and emits an event. This function must be dispatched by a signed extrinsic.
-        #[pallet::weight(10_000 + T::DbWeight::get().writes(1))]
-        pub fn do_something(origin: OriginFor<T>, something: u32) -> DispatchResultWithPostInfo {
-            // Check that the extrinsic was signed and get the signer.
-            // This function will return an error if the extrinsic is not signed.
-            // https://substrate.dev/docs/en/knowledgebase/runtime/origin
+        /// Add a block to the world. Will fail if you do not own the chunk.
+        #[pallet::weight(10_000 + T::DbWeight::get().reads_writes(1, 1))]
+        pub fn write_block(
+            origin: OriginFor<T>,
+            location: [i32; 3],
+            block: u16,
+        ) -> DispatchResultWithPostInfo {
             let who = ensure_signed(origin)?;
 
-            // Update storage.
-            <Something<T>>::put(something);
+            let [x, y, z] = location;
+            let location_of_chunk = [x / 16, y / 16, z / 16];
 
-            // Emit an event.
-            Self::deposit_event(Event::SomethingStored(something, who));
-            // Return a successful DispatchResultWithPostInfo
+            let (owner, mut chunk) =
+                <Chunks<T>>::get(location_of_chunk).ok_or(Error::<T>::ChunkDoesNotExist)?;
+            ensure!(owner == who, Error::<T>::NotYours);
+
+            let local = crate::world_to_chunk(location);
+            chunk[local[0]][local[1]][local[2]] = block;
+            <Chunks<T>>::insert(location_of_chunk, (owner, chunk));
+
             Ok(().into())
         }
 
-        /// An example dispatchable that may throw a custom error.
-        #[pallet::weight(10_000 + T::DbWeight::get().reads_writes(1,1))]
-        pub fn cause_error(origin: OriginFor<T>) -> DispatchResultWithPostInfo {
-            let _who = ensure_signed(origin)?;
+        /// Grab some space.
+        #[pallet::weight(
+            10_000 + T::DbWeight::get().reads_writes(1, 1) + crate::CHUNK_STORAGE_WIEGHT
+        )]
+        pub fn claim_chunk(origin: OriginFor<T>, location: [i32; 3]) -> DispatchResultWithPostInfo {
+            let who = ensure_signed(origin)?;
 
-            // Read a value from storage.
-            match <Something<T>>::get() {
-                // Return an error if the value has not been set.
-                None => Err(Error::<T>::NoneValue)?,
-                Some(old) => {
-                    // Increment the value read from storage; will error in the event of overflow.
-                    let new = old.checked_add(1).ok_or(Error::<T>::StorageOverflow)?;
-                    // Update the value in storage with the incremented result.
-                    <Something<T>>::put(new);
-                    Ok(().into())
-                }
-            }
+            let [x, y, z] = location;
+            let location_of_chunk = [x / 16, y / 16, z / 16];
+            ensure!(
+                !<Chunks<T>>::contains_key(location_of_chunk),
+                Error::<T>::AlreadyOwned
+            );
+
+            <Chunks<T>>::insert(location_of_chunk, (who, &crate::EMPTY_CHUNK));
+
+            Ok(().into())
+        }
+
+        /// Transfer ownership to a friend.
+        #[pallet::weight(10_000 + T::DbWeight::get().reads_writes(1, 1))]
+        pub fn give_chunk(
+            origin: OriginFor<T>,
+            location: [i32; 3],
+            recipient: <T as frame_system::Config>::AccountId,
+        ) -> DispatchResultWithPostInfo {
+            let who = ensure_signed(origin)?;
+
+            let [x, y, z] = location;
+            let location_of_chunk = [x / 16, y / 16, z / 16];
+            let (owner, chunk) =
+                <Chunks<T>>::get(location_of_chunk).ok_or(Error::<T>::ChunkDoesNotExist)?;
+            ensure!(owner == who, Error::<T>::NotYours);
+
+            <Chunks<T>>::insert(location_of_chunk, (recipient, chunk));
+
+            Ok(().into())
         }
     }
+}
+
+fn world_to_chunk(location: [i32; 3]) -> [usize; 3] {
+    let in_chunk = |i: i32| ((i % 16 + 16) % 16) as usize;
+    let [x, y, z] = location;
+    let ret = [in_chunk(x), in_chunk(y), in_chunk(z)];
+    ret
 }
